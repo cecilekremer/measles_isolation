@@ -5,31 +5,31 @@ source('simulation_code/simFunctions.R')
 source('simulation_code/measlesSimulator.R')
 
 seeding.time = Inf # no additional seeding
-child.seed.arg = 5
+child.seed.arg = 1
 prop.lambda.w = 1
 rho.ch = 1 # prob of symptomatic child
 rho.ad = 1 # prob of symptomatic adult
 school.size = 420
 
-R.s = 9.9 # R0; https://www.sciencedirect.com/science/article/pii/S1473309917303079#cesec60 
+R.s = 9.9 # R0; 
 # R.ctcs, # ?
 alpha.as = 1
-prop.immune.ch = 0.5 # prop vaccinated/immune -> status.matrix$infected = -2
+prop.immune.ch = 0.8 # prop vaccinated/immune -> status.matrix$infected = -2
 prop.immune.ad = 1 # prop vaccinated/immune
 #suscep.ch: child susceptibility, relative to adult susceptibility
 suscep.ch = 1
 #pdiagn.ch: probability to TEST a child, when symptomatic
-pdiagn.ch = 1
+pdiagn.ch = 0.9
 #pdiagn.ad: probability to TEST a adult, when symptomatic
-pdiagn.ad = 1
-test.sens.as = 0.8 
-test.sens.s = 0.8
+pdiagn.ad = 0.9
+test.sens.as = 1# 0.8 
+test.sens.s = 0.85
 test.delay.s = 0
 test.delay.as = 10000
 
 #t.detection: time it takes before an indvidual becomes detectable -> 4 days before rash onset, i.e. 8 days (latent period) after infection
 t.detection = 8
-#t.isolation: duration of the isolation -> t_rash + 5 days
+#t.isolation: duration of the isolation -> t_rash + 4 days 
 t.isolation = 4
 #t.isolation.q: duration of isolation after exposure
 t.isolation.q = 21
@@ -66,21 +66,11 @@ reseeding.ad <- 0
 total.seeds<-(seeds.ch+seeds.ad)+floor(t.stop/seeding.time)*(reseeding.ad+reseeding.ch)
 
 
-#lambda.b: contact frequency between classes
-#data from: SOCRATES - Survey Belgium 2010 - contacts for children [6,12] years old (ALL CONTACTS EXCLUDED HOLIDAYS) - within: more than 1 hr - between total contacts - within
-lambda.w = 6.62 # contact frequency within classes
-lambda.b.tot <- 2.5 # contact frequency between classes in a non-pandemic situation
-lambda.b = lambda.b.tot * prop.lambda.w #prop.lamba is the proportion of between contacts respect to the non-pandemic scenario
-
-#
-R.ctcs<-12.16 #(all cts excluded holidays) 
-
-
 ## PRE-PROCESSING    ----
 ################################## #
 
 # set RNG stream
-rnSeed = 14022020
+rnSeed = 191124
 set.seed(rnSeed)
 
 # sample population
@@ -98,6 +88,16 @@ n.teachers <- round(pupils*teacher.pupil.ratio, 0)
 #total.considered.population
 n<-pupils+n.teachers
 
+#lambda.b: contact frequency between classes
+#data from: SOCRATES - Survey Belgium 2010 - contacts for children [6,12] years old (ALL CONTACTS EXCLUDED HOLIDAYS) - within: more than 1 hr - between total contacts - within
+lambda.w = min(classes.comp) - 1 + 2 #techars; #6.62 # contact frequency within classes
+lambda.b.tot <- 2.5 # contact frequency between classes in a non-pandemic situation
+lambda.b = lambda.b.tot * prop.lambda.w #prop.lamba is the proportion of between contacts respect to the non-pandemic scenario
+
+#
+R.ctcs<-lambda.w + lambda.b #12.16 #(all cts excluded holidays) 
+
+
 ## RUN SIMULATION                ----
 ################################## #
 
@@ -111,27 +111,30 @@ for(i_sim in 1:nSim) {
   #print(i_sim)
   epi.outbreak[[i_sim]]<-measles_simulator(t.stop = t.stop, seeding.time = seeding.time,
                                            n.teachers = n.teachers, classes.comp = classes.comp,
-                                           seeds.ch = seeds.ch, seeds.ad = seeds.ad, reseeding.ch = reseeding.ch, reseeding.ad = reseeding.ad,
-                                           R.s = R.s, # R0; https://www.sciencedirect.com/science/article/pii/S1473309917303079#cesec60 
+                                           seeds.ch = 1, seeds.ad = seeds.ad, reseeding.ch = reseeding.ch, reseeding.ad = reseeding.ad,
+                                           overdispersion = F, k.overd = 0.3,
+                                           R.s = 18, # R0; https://www.sciencedirect.com/science/article/pii/S1473309917303079#cesec60 
                                            R.ctcs = R.ctcs, # ?
                                            alpha.as = alpha.as,
-                                           prop.immune.ch = prop.immune.ch, # prop vaccinated/immune -> status.matrix$infected = -2
+                                           prop.immune.ch = 0.8, # prop vaccinated/immune -> status.matrix$infected = -2
                                            prop.immune.ad = prop.immune.ad, # prop vaccinated/immune
                                            lambda.w = lambda.w, lambda.b = lambda.b,
                                            suscep.ch = suscep.ch,
                                            rho.ch = rho.ch, rho.ad = rho.ad,
                                            pdiagn.ch = pdiagn.ch, pdiagn.ad = pdiagn.ad,
                                            t.detection = t.detection, # time it takes before an individual becomes detectable
-                                           test.sens.as = 1, test.sens.s = 1, 
+                                           delay.isolation = 9,
+                                           test.sens.as = test.sens.as, test.sens.s = test.sens.s, 
                                            test.delay.s = test.delay.s, test.delay.as = test.delay.as, 
                                            t.isolation = t.isolation, # isolation for 4 days after rash onset
-                                           t.isolation.q = 10, # isolation after exposure)
+                                           t.isolation.q = t.isolation.q, # isolation after exposure
                                            bool.log.contacts = TRUE
   )
 }
 
 # head(epi.outbreak[[1]]$status.matrix[epi.outbreak[[1]]$status.matrix$infected == -1, ])
 table(epi.outbreak[[1]]$status.matrix$infected)
+summary(epi.outbreak[[1]]$status.matrix$q); hist(epi.outbreak[[1]]$status.matrix$q)
 
 events.sim <- epi.outbreak[[1]]$time.events[-1,]
 events.sim <- data.frame(time = as.numeric(events.sim[,1]),
@@ -141,9 +144,15 @@ events.sim$event <- ifelse(events.sim$event == '1', 'Infection', events.sim$even
 events.sim$event <- ifelse(events.sim$event == '-1', 'Recovery', events.sim$event)
 table(events.sim$event)
 
+#superspreading?
+events.sim[events.sim$event=='Infector',]
+epi.outbreak[[1]]$status.matrix$q[epi.outbreak[[1]]$status.matrix$id==347]
+
 ids.infected <- events.sim$id[events.sim$event == 'Infection']
-ids.isolated <- events.sim$id[events.sim$event == 'Isolation']
+ids.isolated <- events.sim$id[events.sim$event == 'IsolationContact']
+# Isolated due to exposure, not infected
 events.sim[events.sim$id %in% ids.isolated[which(!(ids.isolated %in% ids.infected))], ]
+# events.sim[events.sim$id %in% ids.isolated[which((ids.isolated %in% ids.infected))], ]
 max(events.sim$time)
 epi.outbreak[[1]]$status.matrix[ids.isolated[which(!(ids.isolated %in% ids.infected))], 1] # only '0' will actually be isolated after exposure
 
@@ -176,42 +185,115 @@ for (i in 1:nSim) {
 # }
 
 ## Onward transmission from indivs who are isolated after exposure?
+# Selecting those that were isolated as well as infected
 ids.isol <- unique(events.sim$id[events.sim$event == 'Isolation'])
+ids.isol.ct <- unique(events.sim$id[events.sim$event == 'IsolationContact'])
 ids.inf <- unique(events.sim$id[events.sim$event == 'Infection'])
 isolation.duration <- c()
-ids <- c()
+isolation.duration.ct <- c()
+isolation.duration.ct.inf <- c()
+ids <- c(); ids.ct <- c(); ids.ct.inf <- c()
+
 for(id in unique(events.sim$id)){
+  # Isolation duration of infected individuals
   if((id %in% ids.isol) & (id %in% ids.inf)){
     if(id %in% unique(events.sim$id[events.sim$event == 'BackFromIso'])){
       ids <- c(ids, id)
       isolation.duration <- c(isolation.duration, 
-                              events.sim$time[events.sim$id == id & events.sim$event == 'BackFromIso'] - events.sim$time[events.sim$id == id & events.sim$event == 'Isolation']
+                              events.sim$time[events.sim$id == id & events.sim$event == 'BackFromIso'] - 
+                                events.sim$time[events.sim$id == id & events.sim$event == 'Isolation']
+      )
+    }
+  }
+  # Isolation duration of infected contacts
+  if((id %in% ids.isol.ct) & (id %in% ids.inf)){
+    if(id %in% unique(events.sim$id[events.sim$event == 'BackFromIso'])){
+      ids.ct.inf <- c(ids.ct.inf, id)
+      isolation.duration.ct.inf <- c(isolation.duration.ct,
+                                     events.sim$time[events.sim$id == id & events.sim$event == 'BackFromIso'] - 
+                                       events.sim$time[events.sim$id == id & events.sim$event == 'IsolationContact']
+      )
+    }
+  }
+  # Isolation duration of non-infected contacts
+  if((id %in% ids.isol.ct) & (!(id %in% ids.inf))){
+    if(id %in% unique(events.sim$id[events.sim$event == 'BackFromIso'])){
+      ids.ct <- c(ids.ct, id)
+      isolation.duration.ct <- c(isolation.duration.ct,
+                                 events.sim$time[events.sim$id == id & events.sim$event == 'BackFromIso'] - 
+                                   events.sim$time[events.sim$id == id & events.sim$event == 'IsolationContact']
       )
     }
   }
 }
-table(isolation.duration)
-ids.inf.isol <- ids[which(isolation.duration == 10)]
-# table(events.sim[events.sim$event == 'Infector' & events.sim$id == ids.inf.isol])
-table(events.sim$event[events.sim$id == ids.inf.isol]) # if this includes 'Infector'
+table(isolation.duration) # should be 5
+table(isolation.duration.ct) # should be t.isolation.q - delay.isolation
+table(isolation.duration.ct.inf) # should vary
 
-ids[which(isolation.duration > 10)]
-events.sim[events.sim$id == 1, ]
-dfn[dfn$ID == 1, ]
+
+
+ids.inf.isol <- ids[which(isolation.duration > 5.0001)]
+# table(events.sim[events.sim$event == 'Infector' & events.sim$id == ids.inf.isol])
+table(events.sim$event[events.sim$id %in% ids.inf.isol]) # if this includes 'Infector', there has been onward transmission
+
+events.sim$id[events.sim$id %in% ids.inf.isol & events.sim$event == 'Infector']
+events.sim[events.sim$id == 4, ]
+
+###---------------------------------------------------------------------------------
+### PROBABILITY OF ONWARD TRANSMISSION
+
+# Proportion of infected cases that cause secondary case, incl seeds
+prop.onward <- length(unique(events.sim$id[events.sim$event=='Infector'])) / sum(!is.na(dfn$InfectionTime))
+
+# Proportion of infected cases that cause secondary case, excl seeds
+table(dfn$IsIndex)
+id.index <- dfn$ID[dfn$IsIndex == 1]
+prop.onward.noSeed <- length(unique(events.sim$id[events.sim$event=='Infector' & events.sim$id != id.index])) / (sum(!is.na(dfn$InfectionTime))-1)
+
+# Proportion of isolated infected cases that cause secondary case AFTER their initial isolation
+ids.isol <- unique(events.sim$id[events.sim$event == 'BackFromIso'])
+ids.inf.isol <- unique(ids.isol[ids.isol %in% events.sim$id[events.sim$event == 'Infector']])
+
+inf.after.isol <- rep(0, length(ids.inf.isol))
+for(i in 1:length(ids.inf.isol)){
+  inf.times <- events.sim$time[events.sim$event=='Infector' & events.sim$id == ids.inf.isol[i]]
+  backfromiso.times <- events.sim$time[events.sim$event=='BackFromIso' & events.sim$id == ids.inf.isol[i]][1]
+  timediff <- inf.times - backfromiso.times
+  if(any((timediff[!is.na(timediff)]) > 0)){
+    inf.after.isol[i] <- 1
+  }
+  
+}
+inf.after.isol
+
+prop.onward.after.isolation <- sum(inf.after.isol) / (sum(!is.na(dfn$InfectionTime))-1)
+
+
+prop.onward; prop.onward.noSeed; prop.onward.after.isolation
+
+#----------------------------------------------------------------------------------
+
+ids[which(isolation.duration > 4.000001)]
+events.sim[events.sim$id == 351, ]
+dfn[dfn$ID == 208, ]
 
 # Everyone isolated at t = 14
 table(events.sim$time[events.sim$event == 'Isolation'])
+summary(epi.outbreak[[1]]$status.matrix$time.of.infection)
 events.sim[events.sim$time == 14 & events.sim$event == 'Isolation', ]
 dfn[dfn$ID %in% events.sim$id[events.sim$time == 14 & events.sim$event == 'Isolation'], c(1:10)]
 
 events.sim[events.sim$time != 14 & events.sim$event == 'Isolation', ]
 dd <- dfn[dfn$ID %in% events.sim$id[events.sim$time != 14 & events.sim$event == 'Isolation'], c(1:10)]
+dd
 summary(dd$DayPosTest - dd$InfectionTime)
 events.sim[events.sim$id == 137, ]
 
 summary(events.sim$time[events.sim$event == 'Isolation'])
 ## Only those exposed to seed cases are isolated??
 ddd <- dfn[dfn$ID %in% events.sim$id[events.sim$event == 'Isolation'] & is.na(dfn$InfectionTime), c(1:10)]
+ids <- ddd$ID
+events.sim[events.sim$id %in% ids, ]
 events.sim[events.sim$id %in% ddd$ID[ddd$isImmune==0], ]
 
 ## OUTPUT

@@ -1,30 +1,71 @@
 
 # fun.SymptomOnset: Function to simulate incubation period (infection to first symptoms)
-fun.SymptomOnset <- function(t = 10, fixed = TRUE){
+fun.SymptomOnset <- function(t = 10, median = 12.5, sd = 2.65, fixed = TRUE){
   if(fixed == TRUE){
     return(t)
   }else{
-    stop('not implemented yet')
+    mulog = log(median)
+    sdlog = sqrt(log(1 + (sd^2 / median^2)))
+    return(rlnorm(1, mulog, sdlog))
   }
 }
 
 # fun.RashOnset: Function to simulate incubation period (infection to rash onset)
-fun.RashOnset <- function(t = 14, fixed = TRUE){
+fun.RashOnset <- function(t = 14, lb = 3, ub = 5, fixed = TRUE){
   if(fixed == TRUE){
     return(t)
   }else{
-    stop('not implemented yet')
+    return(runif(1, min = lb, max = ub))
   }
 }
 
-# fun.SymptmPeriod: Function to simulate the infectious period length
-fun.SymptmPeriod <- function(t = 9, fixed = TRUE){
-  if(fixed == TRUE){
-    return(t)
-  }else{
-    stop('not implemented yet')
+# rashonsets <- c()
+# symponsets <- c()
+# for(i in 1:500){
+#   symponsets <- c(symponsets, fun.SymptomOnset(fixed = FALSE))
+#   rashonsets <- c(rashonsets, symponsets[i] + fun.RashOnset(fixed = FALSE))
+# }
+# hist(rashonsets); hist(symponsets)
+# summary(rashonsets); summary(symponsets)
+
+# # fun.SymptmPeriod: Function to simulate the infectious period length
+# fun.SymptmPeriod <- function(t = 9, fixed = TRUE){
+#   if(fixed == TRUE){
+#     return(t)
+#   }else{
+#     stop('not implemented yet')
+#   }
+# }
+
+# fun.ctRate : Function for contact rate accounting for overdispersion; no overd: contact rate = lambda
+fun.ctRate <- function(Rs, k.overd, lambda, dist = 'NB'){
+  if(dist == 'NB'){
+    nctr <- rnbinom(1, size = k.overd, mu = Rs)*lambda/Rs
   }
+  
+  return(nctr)
 }
+
+# ctRates <- c()
+# for(i in 1:1000){
+#   ctRates <- c(ctRates, fun.ctRate(9.9, 0.1, 16, 'NB'))
+# }
+# hist(ctRates); summary(ctRates)
+
+# fun.Rs : Function for reproduction number accounting for overdispersion
+fun.Rs <- function(Rs, k.overd, dist = 'NB'){
+  if(dist == 'NB'){
+    r <- rnbinom(1, size = k.overd, mu = Rs)
+  }
+  
+  return(r)
+}
+
+# R0s <- c()
+# for(i in 1:1000){
+#   R0s <- c(R0s, fun.Rs(9.9, Inf, 'NB'))
+# }
+# hist(R0s); summary(R0s)
 
 # fun.Infectiousness: Function for the infectiousness profile
 fun.Infectiousness <- function(t.curr, t.rash.onset){
@@ -111,14 +152,14 @@ sample_cases <- function(id.potential,num.infections){
 }
 
 # function to start infection for the individuals of the given id's at current.time
-register_infected_cases <- function(id.vector, current.time, status.matrix, id.infector){
+register_infected_cases <- function(id.vector, current.time, status.matrix, id.infector, overdispersion, k.overd){
   
   for (i_id in id.vector){
     
     status.matrix$infected[i_id]             <- 1 
     status.matrix$time.of.infection[i_id]    <- current.time
-    status.matrix$TimeSymptomOnset[i_id]     <- current.time + fun.SymptomOnset(t = 10, fixed = TRUE)
-    status.matrix$TimeRashOnset[i_id]        <- current.time + fun.RashOnset(t = 14, fixed = TRUE)
+    status.matrix$TimeSymptomOnset[i_id]     <- current.time + fun.SymptomOnset(fixed = FALSE)
+    status.matrix$TimeRashOnset[i_id]        <- status.matrix$TimeSymptomOnset[i_id] + fun.RashOnset(fixed = FALSE)
     status.matrix$recovery.vector[i_id]      <- status.matrix$TimeRashOnset[i_id] + fun.InfectDuration(t = 10, fixed = TRUE) # recovery time in days from rash onset
     status.matrix$total_infectionPeriod[i_id]<- status.matrix$recovery.vector[i_id] - current.time
     status.matrix$infectives[i_id]           <- 1
@@ -132,7 +173,14 @@ register_infected_cases <- function(id.vector, current.time, status.matrix, id.i
     # status.matrix$severity[i_id]     <- 1
     
     if (runif(1) < status.matrix$rho[i_id]){ # if the indiviual is going to be symptomatic
-      status.matrix$q[i_id]  <- R.s/R.ctcs  # a single q parameter for everyone
+      if(overdispersion == FALSE){
+        status.matrix$q[i_id]  <- R.s/R.ctcs  # a single q parameter for everyone
+      }else{
+        status.matrix$q[i_id] <- fun.Rs(R.s, k.overd, 'NB')/R.ctcs
+        if(status.matrix$q[i_id] > 1){
+          status.matrix$q[i_id] <- 1
+        }
+      }
       if (runif(1) < status.matrix$pdiagn[i_id]){ # if the individual is going to be diagnosed: detection at time of rash onset
         status.matrix$detection.day[i_id]   <- status.matrix$TimeRashOnset[i_id]  
         # status.matrix$severity[i_id]        <- 2
@@ -140,7 +188,11 @@ register_infected_cases <- function(id.vector, current.time, status.matrix, id.i
     }else{ # not symptomatic
       status.matrix$TimeSymptomOnset[i_id] <- Inf
       status.matrix$TimeRashOnset[i_id] <- Inf
-      status.matrix$q[i_id]<-R.s/R.ctcs*alpha.as # relative infectiousness of asymptomatic
+      if(overdispersion == FALSE){
+        status.matrix$q[i_id]<-R.s/R.ctcs*alpha.as # relative infectiousness of asymptomatic
+      }else{
+        status.matrix$q[i_id] <- fun.Rs(R.s, k.overd, 'NB')/R.ctcs*alpha.as
+      }
     }
     time.events <<- rbind(time.events, c(current.time, 1, i_id))
     
