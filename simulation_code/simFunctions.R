@@ -1,4 +1,19 @@
 
+## Function to compute Rt after simulations
+comp.RT<-function(status.matrix,individual,Rt){
+  infectees<-which(status.matrix$infector==individual) #people infected by individual
+  Rt.temp<-0
+  if (length(infectees)>0){
+    for (i1 in 1:length(infectees)){
+      if (status.matrix$time.of.infection[infectees[i1]]>status.matrix$time.of.infection[individual]){
+        Rt.temp<-Rt.temp+1
+      }
+    }
+  }
+  Rt<-rbind(Rt,c(status.matrix$time.of.infection[individual],Rt.temp))
+  return(Rt)
+}
+
 # fun.SymptomOnset: Function to simulate incubation period (infection to first symptoms)
 fun.SymptomOnset <- function(t = 10, median = 12.5, sd = 2.65, fixed = TRUE){
   if(fixed == TRUE){
@@ -174,9 +189,12 @@ register_infected_cases <- function(id.vector, current.time, status.matrix, id.i
     
     if (runif(1) < status.matrix$rho[i_id]){ # if the indiviual is going to be symptomatic
       if(overdispersion == FALSE){
-        status.matrix$q[i_id]  <- R.s/R.ctcs  # a single q parameter for everyone
+        status.matrix$q[i_id]  <- R.s/status.matrix$R.ctcs[i_id]  # a single q parameter for everyone
+        if(status.matrix$q[i_id] > 1){
+          status.matrix$q[i_id] <- 1
+        }
       }else{
-        status.matrix$q[i_id] <- fun.Rs(R.s, k.overd, 'NB')/R.ctcs
+        status.matrix$q[i_id] <- fun.Rs(R.s, k.overd, 'NB')/status.matrix$R.ctcs[i_id]
         if(status.matrix$q[i_id] > 1){
           status.matrix$q[i_id] <- 1
         }
@@ -189,9 +207,15 @@ register_infected_cases <- function(id.vector, current.time, status.matrix, id.i
       status.matrix$TimeSymptomOnset[i_id] <- Inf
       status.matrix$TimeRashOnset[i_id] <- Inf
       if(overdispersion == FALSE){
-        status.matrix$q[i_id]<-R.s/R.ctcs*alpha.as # relative infectiousness of asymptomatic
+        status.matrix$q[i_id]<-R.s/status.matrix$R.ctcs[i_id]*alpha.as # relative infectiousness of asymptomatic
+        if(status.matrix$q[i_id] > 1){
+          status.matrix$q[i_id] <- 1
+        }
       }else{
-        status.matrix$q[i_id] <- fun.Rs(R.s, k.overd, 'NB')/R.ctcs*alpha.as
+        status.matrix$q[i_id] <- fun.Rs(R.s, k.overd, 'NB')/status.matrix$R.ctcs[i_id]*alpha.as
+        if(status.matrix$q[i_id] > 1){
+          status.matrix$q[i_id] <- 1
+        }
       }
     }
     time.events <<- rbind(time.events, c(current.time, 1, i_id))

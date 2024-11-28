@@ -4,11 +4,13 @@ measles_simulator <- function(t.stop, seeding.time,
                               seeds.ch, seeds.ad = 0, reseeding.ch, reseeding.ad = 0,
                               R.s = 9.9, # R0; https://www.sciencedirect.com/science/article/pii/S1473309917303079#cesec60 
                               overdispersion = FALSE, k.overd, # overdispersion parameter for the contact rate
-                              R.ctcs, # total contacts
+                              # R.ctcs, # total contacts
                               alpha.as = 1,
-                              prop.immune.ch, # prop vaccinated/immune -> status.matrix$infected = -2
+                              prop.immune.ch1, # prop vaccinated/immune -> status.matrix$infected = -2 # year 1-3
+                              prop.immune.ch2, # year 4-6
                               prop.immune.ad = 1, # prop vaccinated/immune
-                              lambda.w, lambda.b,
+                              # lambda.w, 
+                              lambda.b,
                               suscep.ch = 1,
                               rho.ch = 1, rho.ad = 1,
                               pdiagn.ch, pdiagn.ad,
@@ -36,10 +38,12 @@ measles_simulator <- function(t.stop, seeding.time,
                               TimeToDetection   = NA,        #6
                               Detected          = 0,         #7
                               Category          = 0,         #8
+                              SchoolYear        = NA,
                               TeacherAssign     = 0,         #9
                               IndexCase         = 0,         #10
                               TimePosTest       = Inf,       #11
-                              VaccStatus        = 0          #12
+                              VaccStatus        = 0,          #12
+                              R.ctcs            = 0
   )
   
   group.label <- 1:n.class
@@ -54,14 +58,27 @@ measles_simulator <- function(t.stop, seeding.time,
                                           classes.comp = classes.comp,
                                           n.teachers = n.teachers)
   
-  # ## Within-class contact rate
-  # lambda.w <- NULL
-  # for(i_id in 1:n){
-  #   lambda.w[1:sum(classes.comp)] <- 
-  # }
+  ## Set school years (1-3 + 4-6) -> half/half for now
+  status.matrix$SchoolYear <- ifelse(status.matrix$Category <= floor(n.class/2) & status.matrix$Category != 0, 1, 
+                                     ifelse(status.matrix$Category != 0, 2, status.matrix$SchoolYear))
+  
+  ## Within-class contact rate
+  lambda.w <- NULL
+  for(c in 1:length(classes.comp)){
+    ids.class <- c(which(status.matrix$Category == c), which(status.matrix$TeacherAssign == c))
+    lambda.w[ids.class] <- classes.comp[c] - 1
+  }
+  ## Total contact rate
+  status.matrix$R.ctcs <- lambda.w + lambda.b
   
   ## Proportion immune
-  status.matrix$infected[sample(1:sum(classes.comp), floor(prop.immune.ch * sum(classes.comp)))] <- (-2) # children that are immune
+  ids.immune.1 <- sample(seq(min(which(status.matrix$SchoolYear == 1)), max(which(status.matrix$SchoolYear == 1)), 1), 
+                         floor(prop.immune.ch1 * sum(status.matrix$SchoolYear == 1, na.rm = T)))
+  status.matrix$infected[ids.immune.1] <- (-2) # children in year 1-3 that are immune
+  ids.immune.2 <- sample(seq(min(which(status.matrix$SchoolYear == 2)), max(which(status.matrix$SchoolYear == 2)), 1),
+                         floor(prop.immune.ch2 * sum(status.matrix$SchoolYear == 2, na.rm = T)))
+  status.matrix$infected[ids.immune.2] <- (-2) # children in year 4-6 that are immune
+  # status.matrix$infected[sample(1:sum(classes.comp), floor(prop.immune.ch * sum(classes.comp)))] <- (-2) # children that are immune
   status.matrix$infected[sample((sum(classes.comp)+1):n, floor(prop.immune.ad * n.teachers))] <- (-2) # adults that are immune
   # Set vaccination status
   status.matrix$VaccStatus[status.matrix$infected == (-2)] <- 1

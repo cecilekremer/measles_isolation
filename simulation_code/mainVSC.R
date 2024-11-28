@@ -21,7 +21,8 @@ school.size = 420
 R.s = 12 # R0; 
 # R.ctcs, # ?
 alpha.as = 1
-prop.immune.ch = 0.8 # prop vaccinated/immune -> status.matrix$infected = -2
+prop.immune.ch1 = 0.89 # prop vaccinated/immune school year 1-3 -> status.matrix$infected = -2
+prop.immune.ch2 = 0.95 # school year 4-6
 prop.immune.ad = 1 # prop vaccinated/immune
 #suscep.ch: child susceptibility, relative to adult susceptibility
 suscep.ch = 1
@@ -79,7 +80,7 @@ if(scenario == 'Baseline'){
   delay.isolation = 9
   R.s = 12
   overdispersion = FALSE
-  #### Scenairos superspreading
+  #### Scenarios superspreading
 }else if(scenario == 'Scen5'){
   child.seed.arg = 1
   t.isolation.q = 0
@@ -171,13 +172,13 @@ n<-pupils+n.teachers
 #lambda.b: contact frequency between classes
 #data from: SOCRATES - Survey Belgium 2010 - contacts for children [6,12] years old (ALL CONTACTS EXCLUDED HOLIDAYS) - within: more than 1 hr - between total contacts - within
 # lambda.w = 6.62 # contact frequency within classes
-lambda.w <- min(classes.comp) - 1 + 2 # 16
+# lambda.w <- min(classes.comp) - 1 + 2 # 16
 lambda.b.tot <- 2.5 # contact frequency between classes in a non-pandemic situation
 lambda.b = lambda.b.tot * prop.lambda.w #prop.lamba is the proportion of between contacts respect to the non-pandemic scenario
 
 #
 # R.ctcs<-12.16 #(all cts excluded holidays) 
-R.ctcs <- lambda.w + lambda.b
+# R.ctcs <- lambda.w + lambda.b
 
 ## RUN SIMULATION                ----
 ################################## #
@@ -199,11 +200,13 @@ epi.outbreak<-foreach(i_sim = 1:nSim) %dopar% {
                                            seeds.ch = seeds.ch, seeds.ad = seeds.ad, reseeding.ch = reseeding.ch, reseeding.ad = reseeding.ad,
                                            overdispersion = overdispersion, k.overd = k.overd,
                                            R.s = R.s, # R0; https://www.sciencedirect.com/science/article/pii/S1473309917303079#cesec60 
-                                           R.ctcs = R.ctcs, # ?
+                                           # R.ctcs = R.ctcs, # ?
                                            alpha.as = alpha.as,
-                                           prop.immune.ch = prop.immune.ch, # prop vaccinated/immune -> status.matrix$infected = -2
+                                           prop.immune.ch1 = prop.immune.ch1, # prop vaccinated/immune -> status.matrix$infected = -2
+                                           prop.immune.ch2 = prop.immune.ch2,
                                            prop.immune.ad = prop.immune.ad, # prop vaccinated/immune
-                                           lambda.w = lambda.w, lambda.b = lambda.b,
+                                           # lambda.w = lambda.w, 
+                                           lambda.b = lambda.b,
                                            suscep.ch = suscep.ch,
                                            rho.ch = rho.ch, rho.ad = rho.ad,
                                            pdiagn.ch = pdiagn.ch, pdiagn.ad = pdiagn.ad,
