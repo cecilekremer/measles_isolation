@@ -9,4 +9,4 @@
 
 module load R/4.1.0-foss-2021a 
 
-Rscript $VSC_SCRATCH/Measles/mainVSC.R 
+Rscript $VSC_SCRATCH/Measles/mainVSC_cutoff.R 

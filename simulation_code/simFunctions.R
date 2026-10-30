@@ -17,7 +17,7 @@ comp.RT<-function(status.matrix,individual,Rt){
 # fun.SymptomOnset: Function to simulate incubation period (infection to first symptoms)
 fun.SymptomOnset <- function(t = 10, median = 12.5, sd = 2.65, fixed = TRUE){
   if(fixed == TRUE){
-    return(t)
+    return(median)
   }else{
     mulog = log(median)
     sdlog = sqrt(log(1 + (sd^2 / median^2)))
@@ -83,15 +83,20 @@ fun.Rs <- function(Rs, k.overd, dist = 'NB'){
 # hist(R0s); summary(R0s)
 
 # fun.Infectiousness: Function for the infectiousness profile
-fun.Infectiousness <- function(t.curr, t.rash.onset){
+fun.Infectiousness <- function(t.curr, t.rash.onset, const = TRUE){
   if(t.curr < (t.rash.onset - 4) | t.curr > (t.rash.onset + 4)){
     return(0)
   }else{ # infectious between 4 days before and 4 days after rash onset
-    return(1)
+    if(const == TRUE){
+      return(1)
+    }else if(const == FALSE){
+      dtri(t.curr, min = t.rash.onset - 4.01, max = t.rash.onset + 4.01, mode = t.rash.onset)
+    }
   }
 }
 
 # fun.InfectDuration: Function for the duration of infection (rash onset time to recovery time)
+# set as recovered as soon as they are not infectious anymore?
 fun.InfectDuration <- function(t = 14, fixed = TRUE){
   if(fixed == TRUE){
     return(t)
@@ -151,7 +156,7 @@ assignTeacherToClasses<-function(status.matrix,classes.comp,n.teachers){
 }
 
 # function to sample from the given list, with defensive programming checks 
-sample_cases <- function(id.potential,num.infections){
+sample_cases <- function(id.potential,num.infections,diff.class,status.matrix){
   
   if(num.infections==0){
     return(NULL)
@@ -160,20 +165,31 @@ sample_cases <- function(id.potential,num.infections){
   if (length(id.potential)==1){
     id.vector <- id.potential
   } else {
-    id.vector<-sample(id.potential,min(num.infections,length(id.potential)), replace = FALSE)
+    # should cases be introduced in different classes
+    if(diff.class == FALSE){
+      id.vector<-sample(id.potential,min(num.infections,length(id.potential)), replace = FALSE)
+    }else if(diff.class == TRUE){
+      id.vector<-rep(NA, num.infections)
+      for(i in 1:num.infections){
+        id.vector[i] <- sample(id.potential, 1, replace = FALSE)
+        id.potential <- id.potential[-which(id.potential==id.vector[i])]
+        class.tmp <- status.matrix$Category[status.matrix$id==id.vector[i]]
+        id.potential <- id.potential[-which(id.potential %in% status.matrix$id[status.matrix$Category==class.tmp])]
+      }
+    }
   }
   
   return(id.vector)
 }
 
 # function to start infection for the individuals of the given id's at current.time
-register_infected_cases <- function(id.vector, current.time, status.matrix, id.infector, overdispersion, k.overd){
+register_infected_cases <- function(id.vector, current.time, status.matrix, id.infector, overdispersion, k.overd, R.s, detectionSymp, m, fixed.incubation, daycare){
   
   for (i_id in id.vector){
     
     status.matrix$infected[i_id]             <- 1 
     status.matrix$time.of.infection[i_id]    <- current.time
-    status.matrix$TimeSymptomOnset[i_id]     <- current.time + fun.SymptomOnset(fixed = FALSE)
+    status.matrix$TimeSymptomOnset[i_id]     <- current.time + fun.SymptomOnset(median = m, fixed = fixed.incubation)
     status.matrix$TimeRashOnset[i_id]        <- status.matrix$TimeSymptomOnset[i_id] + fun.RashOnset(fixed = FALSE)
     status.matrix$recovery.vector[i_id]      <- status.matrix$TimeRashOnset[i_id] + fun.InfectDuration(t = 10, fixed = TRUE) # recovery time in days from rash onset
     status.matrix$total_infectionPeriod[i_id]<- status.matrix$recovery.vector[i_id] - current.time
@@ -199,8 +215,23 @@ register_infected_cases <- function(id.vector, current.time, status.matrix, id.i
           status.matrix$q[i_id] <- 1
         }
       }
-      if (runif(1) < status.matrix$pdiagn[i_id]){ # if the individual is going to be diagnosed: detection at time of rash onset
-        status.matrix$detection.day[i_id]   <- status.matrix$TimeRashOnset[i_id]  
+      if (runif(1) < status.matrix$pdiagn[i_id]){ # if the individual is going to be diagnosed: detection between symptom onset and rash+d
+        if(detectionSymp == 'default'){
+          # detection between symptom onset and 3 days after rash
+          status.matrix$detection.day[i_id]   <- runif(1, status.matrix$TimeSymptomOnset[i_id], status.matrix$TimeRashOnset[i_id]+3)  
+        }else if(detectionSymp == 'symp.onset'){
+          status.matrix$detection.day[i_id] <- status.matrix$TimeSymptomOnset[i_id]
+        }else if(detectionSymp == 'dist'){
+          # detection probability highest at onset of rash
+          status.matrix$detection.day[i_id] <- rtri(1, min = status.matrix$TimeSymptomOnset[i_id], max = status.matrix$TimeRashOnset[i_id]+3,
+                                                    mode = status.matrix$TimeRashOnset[i_id])
+        }else if(detectionSymp == 'dist2'){
+          # no later than rash onset
+          status.matrix$detection.day[i_id] <- rtri(1, min = status.matrix$TimeSymptomOnset[i_id], max = status.matrix$TimeRashOnset[i_id],
+                                                    mode = status.matrix$TimeRashOnset[i_id]-0.00000001)
+        }else if(detectionSymp == 'rash.onset'){
+          status.matrix$detection.day[i_id] <- status.matrix$TimeRashOnset[i_id]
+        }
         # status.matrix$severity[i_id]        <- 2
       }
     }else{ # not symptomatic
@@ -222,7 +253,7 @@ register_infected_cases <- function(id.vector, current.time, status.matrix, id.i
     
     # register contacts 
     status.matrix$index.contact.within[i_id] <- 1  
-    if (status.matrix$Category[i_id]!=0){ 
+    if (status.matrix$Category[i_id]!=0 & daycare==FALSE){ 
       status.matrix$index.contact.between[i_id]<-1  
     }
     

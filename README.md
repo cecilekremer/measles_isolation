@@ -1,1 +1,0 @@
-# measles_isolation

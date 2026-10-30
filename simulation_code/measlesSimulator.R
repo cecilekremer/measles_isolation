@@ -14,17 +14,39 @@ measles_simulator <- function(t.stop, seeding.time,
                               suscep.ch = 1,
                               rho.ch = 1, rho.ad = 1,
                               pdiagn.ch, pdiagn.ad,
-                              t.detection = 8, # time it takes before an individual becomes detectable
+                              t.detection = 3, # time it takes before an individual becomes detectable
+                              detectionSymp = 'symp.onset', # should cases be diagnosed at time of symptom onset
+                              median.incubation = 12.5,
+                              fixed.incubation = FALSE,
+                              const.infect = TRUE, # whether to use constant infectiousness or peaked around rash onset
                               test.sens.as, test.sens.s, test.delay.s, test.delay.as = 10000, 
                               delay.isolation = 0,
+                              isolate.once = FALSE,
                               t.isolation = 4, # isolation for 4 days after rash onset
                               t.isolation.q = 21, # isolation after exposure
+                              daycare = FALSE, prop.infants = 0.3, days.present, children.present, weekend = FALSE,
+                              PEV = FALSE, # post-exposure vaccination in schools
+                              pev.accept = 0.9, pev.eff = 0.83, pev.duration.q = 0, 
                               bool.log.contacts = FALSE
 ){
   
   
   ##-------------------------
   ## SETUP POPULATION
+  
+  ## Adjust days.present to exclude weekends
+  if(weekend == TRUE & daycare == TRUE){
+    for(i in 1:length(days.present)){
+      day_of_week <- days.present[[i]] %% 7
+      days.present[[i]] <- days.present[[i]][!(day_of_week %in% c(5,6))]
+    }
+    # remove children.present on weekends
+    for(j in 1:length(children.present)){
+      if(((j-1) %% 7) %in% c(5,6)){
+        children.present[[j]] <- NA
+      }
+    }    
+  }
   
   n.class <- length(classes.comp)
   n <- n.teachers + sum(classes.comp)
@@ -43,7 +65,10 @@ measles_simulator <- function(t.stop, seeding.time,
                               IndexCase         = 0,         #10
                               TimePosTest       = Inf,       #11
                               VaccStatus        = 0,          #12
-                              R.ctcs            = 0
+                              R.ctcs            = 0,
+                              id                = 1:n,
+                              pev.accept        = 0, # willingness to accept PEV
+                              PEV.status        = 0
   )
   
   group.label <- 1:n.class
@@ -59,36 +84,67 @@ measles_simulator <- function(t.stop, seeding.time,
                                           n.teachers = n.teachers)
   
   ## Set school years (1-3 + 4-6) -> half/half for now
-  status.matrix$SchoolYear <- ifelse(status.matrix$Category <= floor(n.class/2) & status.matrix$Category != 0, 1, 
-                                     ifelse(status.matrix$Category != 0, 2, status.matrix$SchoolYear))
+  if(daycare == FALSE){
+    status.matrix$SchoolYear <- ifelse(status.matrix$Category <= floor(n.class/2) & status.matrix$Category != 0, 1, 
+                                       ifelse(status.matrix$Category != 0, 2, status.matrix$SchoolYear))  
+  }else{
+    infants <- sample(1:dim(status.matrix[status.matrix$Category == 1, ])[1], floor(prop.infants*n), replace = FALSE)
+    status.matrix$SchoolYear[infants] <- 1 # 30% are infants under 1y 
+    status.matrix$SchoolYear <- ifelse(status.matrix$Category == 0, NA, 
+                                       ifelse(is.na(status.matrix$SchoolYear), 2, status.matrix$SchoolYear))
+  }
   
   ## Within-class contact rate
   lambda.w <- NULL
-  for(c in 1:length(classes.comp)){
-    ids.class <- c(which(status.matrix$Category == c), which(status.matrix$TeacherAssign == c))
-    lambda.w[ids.class] <- classes.comp[c] - 1
+  if(daycare == FALSE){
+    for(c in 1:length(classes.comp)){
+      ids.class <- c(which(status.matrix$Category == c), which(status.matrix$TeacherAssign == c))
+      lambda.w[ids.class] <- classes.comp[c] - 1
+    }    
+  }else{
+    lambda.w <- lengths(children.present)[1] + length(which(status.matrix$Category == 0)) - 1
   }
+  
   ## Total contact rate
   status.matrix$R.ctcs <- lambda.w + lambda.b
   
   ## Proportion immune
-  ids.immune.1 <- sample(seq(min(which(status.matrix$SchoolYear == 1)), max(which(status.matrix$SchoolYear == 1)), 1), 
-                         floor(prop.immune.ch1 * sum(status.matrix$SchoolYear == 1, na.rm = T)))
+  if(daycare == FALSE){
+    ids.immune.1 <- sample(seq(min(which(status.matrix$SchoolYear == 1)), max(which(status.matrix$SchoolYear == 1)), 1), 
+                           floor(prop.immune.ch1 * sum(status.matrix$SchoolYear == 1, na.rm = T)))
+    ids.immune.2 <- sample(seq(min(which(status.matrix$SchoolYear == 2)), max(which(status.matrix$SchoolYear == 2)), 1),
+                           floor(prop.immune.ch2 * sum(status.matrix$SchoolYear == 2, na.rm = T)))
+  }else if(daycare == TRUE){
+    ids.immune.1 <- sample(infants, ceiling(prop.immune.ch1 * sum(status.matrix$SchoolYear == 1, na.rm = T)))
+    ids.immune.2 <- sample(status.matrix$id[status.matrix$SchoolYear == 2 & !is.na(status.matrix$SchoolYear)],
+                           floor(prop.immune.ch2 * sum(status.matrix$SchoolYear == 2, na.rm = T)))
+  }
   status.matrix$infected[ids.immune.1] <- (-2) # children in year 1-3 that are immune
-  ids.immune.2 <- sample(seq(min(which(status.matrix$SchoolYear == 2)), max(which(status.matrix$SchoolYear == 2)), 1),
-                         floor(prop.immune.ch2 * sum(status.matrix$SchoolYear == 2, na.rm = T)))
   status.matrix$infected[ids.immune.2] <- (-2) # children in year 4-6 that are immune
   # status.matrix$infected[sample(1:sum(classes.comp), floor(prop.immune.ch * sum(classes.comp)))] <- (-2) # children that are immune
   status.matrix$infected[sample((sum(classes.comp)+1):n, floor(prop.immune.ad * n.teachers))] <- (-2) # adults that are immune
   # Set vaccination status
-  status.matrix$VaccStatus[status.matrix$infected == (-2)] <- 1
+  status.matrix$VaccStatus[status.matrix$infected == (-2)] <- 1    
   
+  ## PEV acceptance willingness: 90% of susceptibles will accept PEV
+  if(PEV == TRUE){
+    ids.accept.pev <- sample(status.matrix$id[status.matrix$infected == 0], floor(pev.accept * sum(status.matrix$infected == 0)))
+    status.matrix$pev.accept[ids.accept.pev] <- 1
+  }
+  
+  # }else{
+  #   status.matrix$infected[sample(1:sum(classes.comp), floor(prop.immune.ch1 * sum(classes.comp)))] <- (-2) # children that are immune
+  #   status.matrix$infected[sample((sum(classes.comp)+1):n, floor(prop.immune.ad * n.teachers))] <- (-2) # adults that are immune
+  #   # Set vaccination status
+  #   status.matrix$VaccStatus[status.matrix$infected == (-2)] <- 1
+  # }
   
   ## Other population features
   status.matrix$recovery.vector       <- rep(NA, n) # recovery times
   status.matrix$detection.day         <- rep(Inf, n) # diagnosis times
   status.matrix$infectives            <- rep(0, n) # indicator for who is infectious at current time
   status.matrix$isolation             <- rep(0, n) # indicator for who is isolated at current time
+  status.matrix$already.isolated      <- rep(0, n) # indicator for who has already been isolated 
   status.matrix$index.contact.within  <- rep(0, n) # indivs that have to propose a new contact
   status.matrix$index.contact.between <- rep(0, n) # indivs that have to propose a new contact
   status.matrix$positive.per.class    <- rep(0, n) # vector of size n.class (warning!)
@@ -96,7 +152,7 @@ measles_simulator <- function(t.stop, seeding.time,
   status.matrix$isolation.day         <- rep(Inf, n)
   status.matrix$back.from.isolation   <- rep(Inf, n)
   # status.matrix$det.timewindow
-  # status.matrix$school.days.losts    
+  # status.matrix$school.days.losts     <- rep(0, n)
   
   ## Log contacts
   status.matrix$log.cnt.within.ch     <- ''
@@ -104,7 +160,7 @@ measles_simulator <- function(t.stop, seeding.time,
   status.matrix$log.cnt.between.ch    <- ''
   
   ## Transmission parameters, per individual
-  status.matrix$id                    <- 1:n
+  # status.matrix$id                    <- 1:n
   status.matrix$q                     <- NA
   status.matrix$total_infectionPeriod <- NA
   status.matrix$contact_rate_within   <- lambda.w #fun.ctRate(R.s, k.overd, lambda.w, 'NB')  #lambda.w
@@ -159,17 +215,26 @@ measles_simulator <- function(t.stop, seeding.time,
   nSeeds.adult <- ifelse(current.time == 0, seeds.ad, reseeding.ad)
   
   temp.suscept.ch <- which(status.matrix$Category != 0 & status.matrix$infected == 0)
-  temp.seeds.ch <- sample_cases(id.potential = temp.suscept.ch, num.infections = nSeeds.child)
+  # seed should be present at day 0
+  if(daycare == TRUE){
+    temp.suscept.ch <- temp.suscept.ch[temp.suscept.ch %in% children.present[[floor(current.time) + 1]]]
+  }
+  temp.seeds.ch <- sample_cases(id.potential = temp.suscept.ch, num.infections = nSeeds.child, diff.class = F, status.matrix = status.matrix)
   
   temp.suscept.ad <- which(status.matrix$Category == 0 & status.matrix$infected == 0)
-  temp.seeds.ad <- sample_cases(id.potential = temp.suscept.ad, num.infections = nSeeds.adult)
+  temp.seeds.ad <- sample_cases(id.potential = temp.suscept.ad, num.infections = nSeeds.adult, diff.class = F, status.matrix = status.matrix)
   
   status.matrix <- register_infected_cases(id.vector = c(temp.seeds.ch, temp.seeds.ad),
                                            current.time,
                                            status.matrix,
                                            id.infector = NA, # index case imported
                                            overdispersion = overdispersion,
-                                           k.overd = k.overd
+                                           k.overd = k.overd,
+                                           R.s = R.s,
+                                           detectionSymp = detectionSymp,
+                                           m = median.incubation,
+                                           fixed.incubation = fixed.incubation,
+                                           daycare = daycare
   )
   status.matrix$IndexCase[temp.seeds.ch] <- 1
   status.matrix$IndexCase[temp.seeds.ad] <- 1
@@ -188,22 +253,62 @@ measles_simulator <- function(t.stop, seeding.time,
   # n.schoolclosure    <- 0
   # n.classclosure     <- 0
   
+  eventtimes <- c()
+  
   while(sum(status.matrix$infectives, na.rm = T) > 0){ # while there are still infectives
     # while(current.time < t.stop){
     
+    eventtimes <- c(eventtimes, current.time)
     ##----------------------------
     ## Set events
     
     ## Individuals who can, propose a new social contact(s)
     # Within class
-    for(i in which(status.matrix$index.contact.within == 1)){
-      status.matrix$contact.time.within.pr.ctc[i] <- rexp(1, status.matrix$contact_rate_within[i]) + current.time # generate the next interarrival time for indiv i
-      status.matrix$index.contact.within[i] <- 0
+    if(daycare == FALSE){
+      for(i in which(status.matrix$index.contact.within == 1)){
+        status.matrix$contact.time.within.pr.ctc[i] <- rexp(1, status.matrix$contact_rate_within[i]) + current.time # generate the next interarrival time for indiv i
+        status.matrix$index.contact.within[i] <- 0
+        
+        # # no contacts on weekends
+        if(weekend == TRUE){
+          if((floor(status.matrix$contact.time.within.pr.ctc[i]) %% 7) == 5){
+            status.matrix$contact.time.within.pr.ctc[i] <- (status.matrix$contact.time.within.pr.ctc[i]) + 2
+          }else if((floor(status.matrix$contact.time.within.pr.ctc[i]) %% 7) == 6){
+            status.matrix$contact.time.within.pr.ctc[i] <- (status.matrix$contact.time.within.pr.ctc[i]) + 1
+          }else{
+            status.matrix$contact.time.within.pr.ctc[i] <- status.matrix$contact.time.within.pr.ctc[i]
+          }
+        }
+      }      
+    }else if(daycare == TRUE){
+      # index has to be present at the day of contact
+      for(i in which(status.matrix$index.contact.within == 1)){
+        mintime <- min(days.present[[i]][days.present[[i]]>floor(current.time)])
+        status.matrix$contact.time.within.pr.ctc[i] <- rexp(1, status.matrix$contact_rate_within[i]) + current.time
+        if(!(floor(status.matrix$contact.time.within.pr.ctc[i]) %in% days.present[[i]])){
+          status.matrix$contact.time.within.pr.ctc[i] <- mintime + rexp(1, status.matrix$contact_rate_within[i])
+        }
+        status.matrix$index.contact.within[i] <- 0
+      }
     }
+    
     # Between class
-    for(i in which(status.matrix$index.contact.between == 1)){
-      status.matrix$contact.time.between.pr.ctc[i] <- rexp(1, status.matrix$contact_rate_between[i]) + current.time
-      status.matrix$index.contact.between[i] <- 0
+    if(daycare == FALSE){
+      for(i in which(status.matrix$index.contact.between == 1)){
+        status.matrix$contact.time.between.pr.ctc[i] <- rexp(1, status.matrix$contact_rate_between[i]) + current.time
+        status.matrix$index.contact.between[i] <- 0
+        
+        # # no contacts on weekends
+        if(weekend == TRUE){
+          if((floor(status.matrix$contact.time.between.pr.ctc[i]) %% 7) == 5){
+            status.matrix$contact.time.between.pr.ctc[i] <- (status.matrix$contact.time.between.pr.ctc[i]) + 2
+          }else if((floor(status.matrix$contact.time.between.pr.ctc[i]) %% 7) == 6){
+            status.matrix$contact.time.between.pr.ctc[i] <- (status.matrix$contact.time.between.pr.ctc[i]) + 1
+          }else{
+            status.matrix$contact.time.between.pr.ctc[i] <- status.matrix$contact.time.between.pr.ctc[i]
+          }
+        }
+      }
     }
     
     ## Aggregate contact times
@@ -223,6 +328,8 @@ measles_simulator <- function(t.stop, seeding.time,
       next.evts <- sample(next.evts, 1)
     }
     
+    # if(next.evts != 'NextCtc'){stop()}
+    
     print(next.evts)
     print(paste0('current time is ', current.time, '; there are ', sum(status.matrix$infected == 1, na.rm = T), ' infected individuals'))
     
@@ -239,17 +346,22 @@ measles_simulator <- function(t.stop, seeding.time,
       nSeeds.adult <- ifelse(current.time == 0, seeds.ad, reseeding.ad)
       
       temp.suscept.ch <- which(status.matrix$Category != 0 & status.matrix$infected == 0)
-      temp.seeds.ch <- sample_cases(id.potential = temp.suscept.ch, num.infections = nSeeds.child)
+      temp.seeds.ch <- sample_cases(id.potential = temp.suscept.ch, num.infections = nSeeds.child, diff.class = F, status.matrix = status.matrix)
       
       temp.suscept.ad <- which(status.matrix$Category == 0 & status.matrix$infected == 0)
-      temp.seeds.ad <- sample_cases(id.potential = temp.suscept.ad, num.infections = nSeeds.adult)
+      temp.seeds.ad <- sample_cases(id.potential = temp.suscept.ad, num.infections = nSeeds.adult, diff.class = F, status.matrix = status.matrix)
       
       status.matrix <- register_infected_cases(id.vector = c(temp.seeds.ch, temp.seeds.ad),
                                                current.time,
                                                status.matrix,
                                                id.infector = NA, # index case imported
                                                overdispersion = overdispersion,
-                                               k.overd = k.overd
+                                               k.overd = k.overd,
+                                               R.s = R.s,
+                                               detectionSymp = detectionSymp,
+                                               m = median.incubation,
+                                               fixed.incubation = fixed.incubation,
+                                               daycare = daycare
       )
       status.matrix$IndexCase[temp.seeds.ch] <- 1
       status.matrix$IndexCase[temp.seeds.ad] <- 1
@@ -282,7 +394,7 @@ measles_simulator <- function(t.stop, seeding.time,
         if(status.matrix$isolation[person.detected] == 0 & status.matrix$Detected[person.detected] == 0){
           
           # amountOfTest <- amountOfTest + 1
-          status.matrix$Detected[person.detected] <- 1
+          # status.matrix$Detected[person.detected] <- 1
           
           # If PCR test positive
           if(is.positive(individual = person.detected,
@@ -292,55 +404,191 @@ measles_simulator <- function(t.stop, seeding.time,
                          current.time = current.time,
                          status.matrix = status.matrix)){
             
+            status.matrix$Detected[person.detected] <- 1
+            
             time.events    <<- rbind(time.events,
                                      c(current.time, 'Detection', person.detected))
             n.detectedpositive <- n.detectedpositive + 1
             status.matrix$TimePosTest[person.detected] <- current.time
             
-            # If symptomatic (rash) when taking the test
-            if(status.matrix$TimeRashOnset[person.detected] <= current.time){
-              
-              status.matrix$isolation.day[person.detected] <- current.time + test.delay.s
-              # test.delay.classmates <- test.delay.s
-              test.delay.classmates <- delay.isolation
-              
-              
-            }else{ # if not symptomatic (rash) when taking the test
-              
-              status.matrix$isolation.day[person.detected] <- current.time + test.delay.as
-              # test.delay.classmates <- test.delay.as
-              test.delay.classmates <- delay.isolation
-              
-            }
+            ## Isolate all individuals who test positive, regardless of symptoms (symptoms affect the duration of isolation later on though)
+            status.matrix$isolation.day[person.detected] <- current.time + test.delay.s
+            test.delay.classmates <- delay.isolation
             
-            ## Isolate classmates, but not for baseline scenario (t.isolation.q = 0)
-            if(t.isolation.q > 0){
-              # Children: isolate unvaccinated/not immune classmates
-              if(status.matrix$Category[person.detected] > 0){
-                class.mates <- c(which(status.matrix$Category[person.detected] == status.matrix$Category))
-                # isolate those who are not vaccinated (i.e. not immune/recovered/infected)
-                class.mates <- class.mates[which(status.matrix$VaccStatus[class.mates] == 0)]
-                class.mates <- class.mates[which(status.matrix$infected[class.mates]!=(-1))] # already recovered
-                class.mates <- setdiff(class.mates, person.detected)
-                status.matrix$isolation.day[class.mates] <- current.time + test.delay.classmates
-              }else{
-                temp.cls <- status.matrix$TeacherAssign[person.detected]
-                class.mates <- c(which(status.matrix$Category == temp.cls), which(status.matrix$TeacherAssign == temp.cls))
-                # isolate those who are not vaccinated (i.e. not immune(-2)/recovered(-1)/infected(1))
-                class.mates <- class.mates[which(status.matrix$VaccStatus[class.mates] == 0)]
-                class.mates <- class.mates[which(status.matrix$infected[class.mates]!=(-1))] # already recovered
-                class.mates <- setdiff(class.mates, person.detected)
-                status.matrix$isolation.day[class.mates] <- current.time + test.delay.classmates
-              }
+            ## Isolate classmates but not for baseline scenario (t.isolation.q = 0)
+            if(t.isolation.q > 0 | PEV == TRUE){
               
+              # only isolate classmates IF case was present in class during the 4 days before or after rash, but isolation is always within 4 days after rash onset
+              if(status.matrix$isolation.day[person.detected] >= (status.matrix$TimeRashOnset[person.detected] - 4)){
+                
+                ## SChool
+                if(daycare == FALSE){
+                  # Children: isolate unvaccinated/not immune classmates
+                  if(status.matrix$Category[person.detected] > 0){
+                    class.mates <- c(which(status.matrix$Category[person.detected] == status.matrix$Category))
+                    # isolate those who are not vaccinated (i.e. not immune/recovered/infected)
+                    class.mates <- class.mates[which(status.matrix$VaccStatus[class.mates] == 0)]
+                    class.mates <- class.mates[which(status.matrix$PEV.status[class.mates] != 1)] # not received PEV yet
+                    class.mates <- class.mates[which(status.matrix$infected[class.mates]!=(-1) & status.matrix$Detected[class.mates]!=1)] # already recovered or already detected
+                    class.mates <- setdiff(class.mates, person.detected)
+                    if(t.isolation.q > 0){
+                      if(isolate.once == TRUE){
+                        class.mates <- class.mates[which(status.matrix$already.isolated[class.mates] == 0)]
+                      }
+                      status.matrix$isolation.day[class.mates] <- current.time + test.delay.classmates
+                    }
+                  }else{
+                    temp.cls <- status.matrix$TeacherAssign[person.detected]
+                    class.mates <- c(which(status.matrix$Category == temp.cls), which(status.matrix$TeacherAssign == temp.cls))
+                    # isolate those who are not vaccinated (i.e. not immune(-2)/recovered(-1)/infected(1))
+                    class.mates <- class.mates[which(status.matrix$VaccStatus[class.mates] == 0)]
+                    class.mates <- class.mates[which(status.matrix$PEV.status[class.mates] != 1)]
+                    class.mates <- class.mates[which(status.matrix$infected[class.mates]!=(-1)  & status.matrix$Detected[class.mates]!=1)] # already recovered
+                    class.mates <- setdiff(class.mates, person.detected)
+                    if(t.isolation.q > 0){
+                      if(isolate.once == TRUE){
+                        class.mates <- class.mates[which(status.matrix$already.isolated[class.mates] == 0)]
+                      }
+                      status.matrix$isolation.day[class.mates] <- current.time + test.delay.classmates
+                    }
+                  }
+                  ## If PEV has to be included (only for schools)
+                  if(PEV == TRUE){
+                    for(c in class.mates){ # classmates that are not yet vaccinated after exposure and not already experienced infection
+                      # PEV effectiveness depending on days since first exposure
+                      exposure.time <- (status.matrix$TimeRashOnset[person.detected] - 4)
+                      # shouldn't be a weekend day
+                      if(weekend == TRUE){
+                        if(floor(exposure.time)%%7 == 5){ # saturday
+                          exposure.time <- exposure.time + 2
+                        }
+                        if(floor(exposure.time)%%7 == 6){ # sunday
+                          exposure.time <- exposure.time + 1
+                        }
+                      }
+                      # If case was not already isolated 
+                      if(status.matrix$isolation.day[person.detected] > exposure.time){
+                        
+                        if(status.matrix$PEV.status[c] == 0){
+                          # if person willing to receive vaccination
+                          if(status.matrix$pev.accept[c] == 1){
+                            
+                            time.events <<- rbind(time.events, c(current.time, "ContactPEV", c))
+                            
+                            # no isolation if Q for PEV is 0
+                            if(pev.duration.q == 0){
+                              status.matrix$isolation.day[c] <- Inf
+                            }else{
+                              status.matrix$isolation.day[c] <- current.time + test.delay.classmates # Q can also be from day 9 onwards
+                            }
+                            
+                            status.matrix$PEV.status[c] <- 1
+                            
+                            # if PEV taken within 3 days of first exposure and already infected
+                            if(status.matrix$infected[c] == 1){
+                              if(((current.time - exposure.time) <= 3) & (status.matrix$time.of.infection[c] >= exposure.time)){
+                                # never quarantined if PEV within 72h (even if not effective due to vaccine failure)
+                                status.matrix$isolation.day[c] <- Inf
+                                # # only effective (in preventing current infection) for individuals who are not yet infected by someone else more than 3 days ago
+                                if(rbinom(1, 1, pev.eff) == 1){
+                                  ## Reset infection-related events
+                                  status.matrix$recovery.vector[c] <- NA
+                                  status.matrix$contact.time.between.pr.ctc[c] <- NA
+                                  status.matrix$contact.time.within.pr.ctc[c]  <- NA
+                                  status.matrix$index.contact.between[c]       <- 0
+                                  status.matrix$index.contact.within[c]        <- 0
+                                  status.matrix$infectives[c]                  <- 0
+                                  status.matrix$detection.day[c]               <- Inf
+                                  # status.matrix$isolation.day[c]               <- Inf
+                                  # status.matrix$isolation[c]                   <- 0
+                                  
+                                  status.matrix$infected[c] <- (-1) # set immune-PEV; set to -1 to count them as a case
+                                  status.matrix$VaccStatus[c] <- 1
+                                  
+                                  time.events <<- rbind(time.events, c(current.time, "EffectivePEV", c)) # effective in preventing current infection
+                                }else{
+                                  #if PEV not effective: no need to do anything since they are immune upon recovery
+                                  # but set to vaccinated just to keep track
+                                  if(rbinom(1, 1, 0.93) == 1){
+                                    status.matrix$VaccStatus[c] <- 1
+                                  }
+                                }
+                                ## Vaccine effectiveness in preventing future infections
+                              }else{
+                                if(rbinom(1, 1, 0.93) == 1){
+                                  status.matrix$VaccStatus[c] <- 1 # set to vaccinated but don't change current 'infected' state; is later set to -1 upon recovery
+                                }
+                                # but no quarantine if PEV given within 3 days
+                                if((current.time - exposure.time) <= 3){
+                                  status.matrix$isolation.day[c] <- Inf
+                                }
+                              }
+                              # }
+                            }else if(status.matrix$infected[c] == 0){
+                              ## If not infected yet, prevents future infections
+                              if(rbinom(1, 1, 0.93) == 1){
+                                status.matrix$infected[c] <- (-2) # set immune-PEV w/ regular vaccine effectiveness for one dose; set to -2 as vaccinated never infected
+                                status.matrix$VaccStatus[c] <- 1
+                              }
+                              ## Also not quarantined if PEV given within 3 days
+                              if((current.time - exposure.time) <= 3){
+                                status.matrix$isolation.day[c] <- Inf
+                              }
+  
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                  
+                  ## Daycare: only isolate those that were present on the same day as the source during their infectious period
+                }else if(daycare == TRUE){
+                  # Children: isolate unvaccinated/not immune classmates
+                  if(status.matrix$Category[person.detected] > 0){
+                    class.mates <- c(which(status.matrix$Category[person.detected] == status.matrix$Category))
+                    # isolate those who are not vaccinated (i.e. not immune/recovered/infected)
+                    class.mates <- class.mates[which(status.matrix$VaccStatus[class.mates] == 0)]
+                    class.mates <- class.mates[which(status.matrix$infected[class.mates]!=(-1) & status.matrix$Detected[class.mates]!=1)] # already recovered or detected
+                    # only take those that were present on same days as index
+                    index.present <- days.present[[person.detected]]
+                    index.present.infect <- index.present[index.present >= floor(status.matrix$TimeRashOnset[person.detected] - 4)]
+                    index.present.infect <- index.present.infect[index.present.infect <= ceiling(status.matrix$TimeRashOnset[person.detected] + 4)]
+                    to.isol <- c()
+                    for(d in index.present.infect){
+                      to.isol <- c(to.isol, class.mates[which(class.mates %in% children.present[[d+1]])])
+                    }
+                    class.mates <- unique(to.isol)
+                    class.mates <- setdiff(class.mates, person.detected)
+                    status.matrix$isolation.day[class.mates] <- current.time + test.delay.classmates
+                  }else{
+                    temp.cls <- status.matrix$TeacherAssign[person.detected]
+                    class.mates <- c(which(status.matrix$Category == temp.cls), which(status.matrix$TeacherAssign == temp.cls))
+                    # isolate those who are not vaccinated (i.e. not immune(-2)/recovered(-1)/infected(1))
+                    class.mates <- class.mates[which(status.matrix$VaccStatus[class.mates] == 0)]
+                    class.mates <- class.mates[which(status.matrix$infected[class.mates]!=(-1)& status.matrix$Detected[class.mates]!=1)] # already recovered or detected
+                    # only take those that were present on same days as index
+                    index.present <- days.present[[person.detected]]
+                    index.present.infect <- index.present[index.present >= floor(status.matrix$TimeRashOnset[person.detected] - 4)]
+                    index.present.infect <- index.present.infect[index.present.infect <= ceiling(status.matrix$TimeRashOnset[person.detected] + 4)]
+                    to.isol <- c()
+                    for(d in index.present.infect){
+                      to.isol <- c(to.isol, class.mates[which(class.mates %in% children.present[[d+1]])])
+                    }
+                    class.mates <- unique(to.isol)
+                    class.mates <- setdiff(class.mates, person.detected)
+                    status.matrix$isolation.day[class.mates] <- current.time + test.delay.classmates
+                  }
+                }
+              }
             }
           }
           
-        }else if(status.matrix$isolation[person.detected] == 1 & status.matrix$Detected[person.detected] == 0){
           ## If already isolated because of exposure
+        }else if(status.matrix$isolation[person.detected] == 1 & status.matrix$Detected[person.detected] == 0){
           
           # amountOfTest <- amountOfTest + 1
-          status.matrix$Detected[person.detected] <- 1
+          # status.matrix$Detected[person.detected] <- 1
           
           # If PCR test positive
           if(is.positive(individual = person.detected,
@@ -350,21 +598,16 @@ measles_simulator <- function(t.stop, seeding.time,
                          current.time = current.time,
                          status.matrix = status.matrix)){
             
+            status.matrix$Detected[person.detected] <- 1
+            
             time.events    <<- rbind(time.events,
                                      c(current.time, 'Detection', person.detected))
             n.detectedpositive <- n.detectedpositive + 1
             status.matrix$TimePosTest[person.detected] <- current.time
             
-            # If symptomatic (rash) when taking the test
-            if(status.matrix$TimeRashOnset[person.detected] <= current.time){
-              # Set 'new' isolation day to update isolation duration
-              status.matrix$isolation.day[person.detected] <- current.time + test.delay.s
-              
-            }else{ # if not symptomatic (rash) when taking the test
-              
-              status.matrix$isolation.day[person.detected] <- current.time + test.delay.as
-              
-            }
+            ## Isolate all individuals who test positive, regardless of symptoms (symptoms affect the duration of isolation later on though)
+            status.matrix$isolation.day[person.detected] <- current.time + test.delay.s
+            
           }
           # No further isolation needed (no contacts)
           
@@ -381,10 +624,11 @@ measles_simulator <- function(t.stop, seeding.time,
       # if(current.time > 14) {stop('check isolated classmates')}
       
       current.time <- events$Isolation
-      if(t.isolation.q > 0){
+      if(t.isolation.q > 0 | pev.duration.q > 0){
         isolated.individuals <- which(status.matrix$isolation.day == events$Isolation)
-      }else if(t.isolation.q == 0){
+      }else if(t.isolation.q == 0 & pev.duration.q == 0){
         isolated.individuals <- which(status.matrix$isolation.day == events$Isolation)
+        ## individuals who are not detected should not be isolated in this case (no quarantine of contacts)
         status.matrix$isolation.day[isolated.individuals[which(status.matrix$Detected[isolated.individuals]==0)]] <- Inf
         # isolated.individuals <- which(status.matrix$isolation.day == events$Isolation & status.matrix$infected == 1)
         isolated.individuals <- which(status.matrix$isolation.day == events$Isolation)
@@ -393,21 +637,44 @@ measles_simulator <- function(t.stop, seeding.time,
       
       for(k in isolated.individuals){
         
+        ## If individual is not already isolated as a contact
         if(status.matrix$isolation[k] == 0){
           
           status.matrix$isolation[k] <- 1
           
+          # Isolated because of infection, i.e. is a detected case
           if(status.matrix$infected[k] == 1 & status.matrix$Detected[k] == 1){
-            # Isolated because of infection --> should be already detected
+            
             status.matrix$back.from.isolation[k] <- status.matrix$TimeRashOnset[k] + t.isolation + 1 # return the 5th day after rash onset
-            # status.matrix$school.days.losts[k] <- status.matrix$school.days.losts[k] + t.isolation
             time.events <<- rbind(time.events, c(current.time, 'Isolation', k))
             
-            # }else if(status.matrix$infected[k] == 0){
+            # can be that they have been previously detected, already back from isolation, but not 'recovered' yet -> shouldn't be isolated again
+            if(!is.infinite(status.matrix$TimePosTest[k])){
+              if(!is.infinite(status.matrix$TimeRashOnset[k])){
+                # if no longer infectious
+                if((status.matrix$TimeRashOnset[k] + 4) < current.time){
+                  status.matrix$isolation[k] <- 0 # i.e. not really isolated
+                  status.matrix$back.from.isolation[k] <- Inf
+                }              
+              }
+            }
+            
           }else{
             # Isolated because of exposure, doesn't matter if infected or not (not detected yet)
             status.matrix$back.from.isolation[k] <- current.time + (t.isolation.q - delay.isolation) # return on day 22
             # status.matrix$school.days.losts[k] <- status.matrix$school.days.losts[k] + t.isolation.q
+            
+            # If contact received PEV: shorter duration of isolation (regardless of whether it was effective or not)
+            if(status.matrix$PEV.status[k] == 1){
+              # if(pev.duration.q > delay.isolation){
+              #   status.matrix$back.from.isolation[k] <- current.time + (pev.duration.q - delay.isolation)
+              #   # status.matrix$school.days.losts[k] 
+              # }else{
+              #   status.matrix$back.from.isolation[k] <- current.time + pev.duration.q
+              # }
+              status.matrix$back.from.isolation[k] <- current.time + (pev.duration.q - delay.isolation)
+            }
+            
             time.events <<- rbind(time.events, c(current.time, 'IsolationContact', k))
             
           }
@@ -443,29 +710,35 @@ measles_simulator <- function(t.stop, seeding.time,
       
       for(w in individuals.back.from.iso){
         
-        if(status.matrix$infected[w] == 1){
-          # ## If still infectious: re-start making contacts
-          # is.infectious <- fun.Infectiousness(current.time, status.matrix$TimeRashOnset[w])
-          # if(is.infectious){
-          #   
-          # }
-          
+        if(status.matrix$infected[w] == 1 & status.matrix$Detected[w] == 1){
           ## Individuals w/ rash onset before isolation (i.e. those diagnosed and then isolated) OR after coming out of isolation
-          if((status.matrix$TimeRashOnset[w] <= (current.time - t.isolation)+0.00000001) | (status.matrix$TimeRashOnset[w] > current.time)){
+          if((status.matrix$TimeRashOnset[w] <= (current.time - t.isolation-1)+0.00000001) | (status.matrix$TimeRashOnset[w] > current.time)){
             status.matrix$isolation[w] <- 0
-            status.matrix$Detected[w] <- 0
+            # status.matrix$Detected[w] <- 0 # do not reset detection status b/c they should not be isolated again if immune due to infection
+            status.matrix$already.isolated[w] <- 1
+            # Can still infect others after isolation
             status.matrix$index.contact.within[w] <- 1
-            if(status.matrix$Category[w] != 0){status.matrix$index.contact.between[w] <- 1}
+            if(daycare == FALSE){
+              if(status.matrix$Category[w] != 0){status.matrix$index.contact.between[w] <- 1}
+            }
             time.events <<- rbind(time.events, c(current.time, 'BackFromIso', w))
           }else{
-            ## Individuals developing rash during isolation are kept in isolation for 4 days after rash onset
+            ## DETECTED Individuals who developed rash during isolation are kept in isolation for 4 days after rash onset
             status.matrix$back.from.isolation[w] <- status.matrix$TimeRashOnset[w] + t.isolation + 1
             # status.matrix$school.days.losts[w]<-status.matrix$school.days.losts[w]+t.isolation
             time.events <<- rbind(time.events, c(current.time, 'StillInIso', w))
           }
-        }else{
+        }else{ # Individuals who have not been detected (i.e. isolated because of contact with a case)
           status.matrix$isolation[w] <- 0
-          status.matrix$Detected[w] <- 0
+          # status.matrix$Detected[w] <- 0
+          status.matrix$already.isolated[w] <- 1
+          # Can still infect others after isolation, if infected
+          if(status.matrix$infected[w] == 1){
+            status.matrix$index.contact.within[w] <- 1
+            if(daycare == FALSE){
+              if(status.matrix$Category[w] != 0){status.matrix$index.contact.between[w] <- 1}
+            }
+          }
           time.events <<- rbind(time.events, c(current.time, 'BackFromIso', w))
         }
       }
@@ -483,7 +756,7 @@ measles_simulator <- function(t.stop, seeding.time,
       
       ## Set as recovered = not detectable anymore
       status.matrix$infected[recovered] <- (-1)
-      status.matrix$Detected[recovered] <- 0
+      # status.matrix$Detected[recovered] <- 0
       time.events <<- rbind(time.events, c(current.time, -1, recovered))
       
       ## Reset all infection-related event features
@@ -510,22 +783,39 @@ measles_simulator <- function(t.stop, seeding.time,
         infector <- which(status.matrix$contact.time.within.pr.ctc == events$NextCtc)
         status.matrix$index.contact.within[infector] <- 1 # re-enable to schedule a contact event
         status.matrix$contact.time.within.pr.ctc[infector] <- NA
-        
-        if(status.matrix$Category[infector] == 0){ # if infector is an adult
-          # get all children in the class
-          temp.cls <- status.matrix$TeacherAssign[infector]
-          infectee.pool <- c(which(status.matrix$Category == temp.cls, which(status.matrix$TeacherAssign == temp.cls)))
-          if(bool.log.contacts) status.matrix$log.cnt.within.ad[infector] <- paste(status.matrix$log.cnt.within.ad[infector], current.time)
-        }else{ # if infector is a child
-          infectee.pool <- c(which(status.matrix$Category == status.matrix$Category[infector]), which(status.matrix$TeacherAssign == status.matrix$Category[infector]))
-          if(bool.log.contacts) status.matrix$log.cnt.within.ch[infector] <- paste(status.matrix$log.cnt.within.ch[infector], current.time)
+        # School
+        if(daycare == FALSE){
+          if(status.matrix$Category[infector] == 0){ # if infector is an adult
+            # get all children in the class
+            temp.cls <- status.matrix$TeacherAssign[infector]
+            infectee.pool <- c(which(status.matrix$Category == temp.cls, which(status.matrix$TeacherAssign == temp.cls)))
+            if(bool.log.contacts) status.matrix$log.cnt.within.ad[infector] <- paste(status.matrix$log.cnt.within.ad[infector], current.time)
+          }else{ # if infector is a child
+            infectee.pool <- c(which(status.matrix$Category == status.matrix$Category[infector]), which(status.matrix$TeacherAssign == status.matrix$Category[infector]))
+            if(bool.log.contacts) status.matrix$log.cnt.within.ch[infector] <- paste(status.matrix$log.cnt.within.ch[infector], current.time)
+          }
+          # Daycare: smaller infectee.pool
+        }else if(daycare == TRUE){
+          if(status.matrix$Category[infector] == 0){ # if infector is an adult
+            # get all children present at that time
+            temp.cls <- status.matrix$TeacherAssign[infector]
+            infectee.pool <- c(which(status.matrix$Category == temp.cls, which(status.matrix$TeacherAssign == temp.cls)))
+            infectee.pool <- infectee.pool[infectee.pool %in% children.present[[floor(current.time) + 1]]]
+            if(bool.log.contacts) status.matrix$log.cnt.within.ad[infector] <- paste(status.matrix$log.cnt.within.ad[infector], current.time)
+          }else{
+            # infectee pool are those that are present at time t
+            infectee.pool <- c(which(status.matrix$Category == status.matrix$Category[infector]), which(status.matrix$TeacherAssign == status.matrix$Category[infector]))
+            infectee.pool <- infectee.pool[infectee.pool %in% children.present[[floor(current.time) + 1]]] # current.time + 1 because list starts at 1 instead of 0
+            if(bool.log.contacts) status.matrix$log.cnt.within.ch[infector] <- paste(status.matrix$log.cnt.within.ch[infector], current.time)
+          }
         }
-      }else{
+      }else{ # only for schools
         ## Between-class contacts
         infector <- which(status.matrix$contact.time.between.pr.ctc == events$NextCtc)
-        status.matrix$index.contact.between[infector]   <- 1
-        status.matrix$contact.time.between.pr.ctc       <- NA
-        
+        if(daycare == FALSE){ # no between contacts
+          status.matrix$index.contact.between[infector]   <- 1
+          status.matrix$contact.time.between.pr.ctc       <- NA          
+        }
         is.between <- TRUE
         infectee.pool <- which(status.matrix$Category != status.matrix$Category[infector] & status.matrix$Category != 0)
         if(bool.log.contacts) status.matrix$log.cnt.between.ch[infector] <- paste(status.matrix$log.cnt.between.ch[infector], current.time)
@@ -539,19 +829,24 @@ measles_simulator <- function(t.stop, seeding.time,
       }
       
       # Probability of effective contact: infectivity measure x transmission potential
-      acc.rate <- fun.Infectiousness(current.time, status.matrix$TimeRashOnset[infector]) *
+      acc.rate <- fun.Infectiousness(current.time, status.matrix$TimeRashOnset[infector], const = const.infect) *
         status.matrix$q[infector] * status.matrix$susceptibility[infectee]
       
       if(status.matrix$isolation[infectee] == 1){acc.rate <- 0} # if infectee is already isolated
       if(acc.rate > 1){err <- err + 1}
-      # Set infected
+      # Set infected; only possible if not immune
       if(status.matrix$infected[infectee] == 0 & runif(1) < acc.rate){
         status.matrix <- register_infected_cases(id.vector = infectee,
                                                  current.time,
                                                  status.matrix,
                                                  id.infector = infector,
                                                  overdispersion = overdispersion,
-                                                 k.overd = k.overd)
+                                                 k.overd = k.overd,
+                                                 R.s = R.s,
+                                                 detectionSymp = detectionSymp,
+                                                 m = median.incubation,
+                                                 fixed.incubation = fixed.incubation,
+                                                 daycare = daycare)
         
         time.events <<- rbind(time.events, c(current.time, 'Infector', infector))
       }
@@ -570,6 +865,7 @@ measles_simulator <- function(t.stop, seeding.time,
     time.events = time.events,
     status.matrix = status.matrix,
     err = err,
+    eventtimes = eventtimes,
     # n.tests = amountOfTest,
     # school.days.losts = sum(status.matrix$school.days.losts),
     n.detectedpositive = n.detectedpositive,
